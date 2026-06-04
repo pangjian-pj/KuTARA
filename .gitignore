@@ -1,0 +1,12 @@
+# 忽略整个configs文件夹（根目录下）
+configs/
+
+# 额外补充常用忽略（Python项目标配，可选）
+.DS_Store
+__pycache__/
+*.pyc
+*.pyd
+*.log
+.vscode/
+.idea/
+.env
