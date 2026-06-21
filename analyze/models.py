@@ -1,5 +1,3 @@
-import math
-from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -53,8 +51,8 @@ class ChebNet(nn.Module):
         return out
 
 
-class GATEncoder(nn.Module):
-    def __init__(self, in_dim, hidden_dim=32, num_heads=4, dropout=0.1, concat=True):
+class MTAEncoder(nn.Module):
+    def __init__(self, in_dim, k=2, hidden_dim=32, num_heads=4, dropout=0.1, concat=True):
         """
         in_dim: 输入维度
         hidden_dim: 每个 head 的输出维度
@@ -68,7 +66,7 @@ class GATEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # 1) Chebyshev 卷积
-        self.cheb = ChebNet(in_dim=in_dim, out_dim=hidden_dim, K=2)
+        self.cheb = ChebNet(in_dim=in_dim, out_dim=hidden_dim, K=k)
 
         # 2) 多头 GAT：每个 head 有独立参数
         self.attn_src = nn.ModuleList([
@@ -144,7 +142,90 @@ class GATEncoder(nn.Module):
         # -------------------------
         z = self.out_proj(h_cat)
         return z
-    
+
+
+class GATEncoder(nn.Module):
+    """Pure multi-head graph attention encoder without the ChebNet front-end."""
+
+    def __init__(self, in_dim, hidden_dim=32, num_heads=4, dropout=0.1, concat=True):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.concat = concat
+        self.dropout = nn.Dropout(dropout)
+        self.input_proj = nn.Linear(in_dim, hidden_dim)
+        self.attn_src = nn.ModuleList([
+            nn.Linear(hidden_dim, hidden_dim, bias=False) for _ in range(num_heads)
+        ])
+        self.attn_dst = nn.ModuleList([
+            nn.Linear(hidden_dim, hidden_dim, bias=False) for _ in range(num_heads)
+        ])
+        self.attn_scorer = nn.ModuleList([
+            nn.Linear(2 * hidden_dim, 1, bias=False) for _ in range(num_heads)
+        ])
+        out_dim = hidden_dim * num_heads if concat else hidden_dim
+        self.out_proj = nn.Linear(out_dim, hidden_dim)
+
+    def forward(self, x: torch.Tensor, adj: torch.Tensor):
+        N = adj.size(0)
+        h = F.relu(self.input_proj(x))
+        h = self.dropout(h)
+        head_outputs = []
+
+        for k in range(self.num_heads):
+            src_k = self.attn_src[k](h)
+            dst_k = self.attn_dst[k](h)
+            e_k = torch.zeros((N, N), device=x.device)
+            for i in range(N):
+                concat_ij = torch.cat([src_k[i].repeat(N, 1), dst_k], dim=-1)
+                e_k[i] = self.attn_scorer[k](concat_ij).squeeze(-1)
+
+            e_k = F.leaky_relu(e_k)
+            self_mask = torch.eye(N, dtype=torch.bool, device=x.device)
+            mask = adj.bool() | self_mask
+            e_masked = torch.where(mask, e_k, torch.full_like(e_k, -1e9))
+            attn_k = torch.softmax(e_masked, dim=1)
+            attn_k = self.dropout(attn_k)
+            head_outputs.append(attn_k @ h)
+
+        if self.concat:
+            h_cat = torch.cat(head_outputs, dim=-1)
+        else:
+            h_cat = torch.stack(head_outputs, dim=0).mean(dim=0)
+        return self.out_proj(h_cat)
+
+
+class GCNEncoder(nn.Module):
+    """Two-layer GCN encoder without attention."""
+
+    def __init__(self, in_dim, hidden_dim=32, dropout=0.1):
+        super().__init__()
+        self.lin1 = nn.Linear(in_dim, hidden_dim)
+        self.lin2 = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, adj: torch.Tensor):
+        N = adj.size(0)
+        A = adj.float() + torch.eye(N, device=x.device)
+        A_norm = normalize_adj(A)
+        h = A_norm @ x
+        h = F.relu(self.lin1(h))
+        h = self.dropout(h)
+        h = A_norm @ h
+        return self.lin2(h)
+
+
+def build_graph_encoder(encoder_type: str, in_dim: int, hidden_dim: int = 32, dropout: float = 0.1) -> nn.Module:
+    encoder_type = (encoder_type or "mta").lower()
+    if encoder_type == "mta":
+        return MTAEncoder(in_dim=in_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if encoder_type == "gat":
+        return GATEncoder(in_dim=in_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if encoder_type == "gcn":
+        return GCNEncoder(in_dim=in_dim, hidden_dim=hidden_dim, dropout=dropout)
+    raise ValueError(f"Unknown analyzer encoder_type: {encoder_type}")
+
+
 class Informer(nn.Module):
     """
     Informer-like encoder-only model (one-shot prediction).
@@ -238,4 +319,3 @@ class Informer(nn.Module):
             edge_preds = torch.zeros(H, 0, 1, device=device)
 
         return node_preds, edge_preds
-

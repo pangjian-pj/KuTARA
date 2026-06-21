@@ -10,8 +10,8 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from monitor.monitor import Monitor
-from analysis.analyzer import Analyzer, AnalyzeConfig, AnalyzeResult
+from monitor import Monitor
+from analyze import Analyzer, AnalyzeConfig, AnalyzeResult
 
 logger = logging.getLogger(__name__)
 
@@ -641,4 +641,3 @@ class KuTARAEnv(gym.Env):
             "w_pred": float(getattr(self.cfg, "rewardpred_weight", 0.05)),
         }
         return total, components
-

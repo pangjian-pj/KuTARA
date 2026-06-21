@@ -1,13 +1,15 @@
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 from .types import TopologyEmbedding, TopologyForecast, AnalyzeResult
 from .loader import load_adjacency_with_nodes, adjacency_to_edge_index
-from .models import GATEncoder, Informer
-from monitor.monitor import Monitor
+from .models import Informer, build_graph_encoder
+
+if TYPE_CHECKING:
+    from monitor import Monitor
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,11 @@ class AnalyzeConfig:
         history_length: int = 4,
         weights_path: Optional[str] = None,
         use_causal_mask: bool = True,
+        encoder_type: str = "mta",
     ):
+        encoder_type = (encoder_type or "mta").lower()
+        if encoder_type not in {"mta", "gat", "gcn"}:
+            raise ValueError(f"encoder_type must be one of mta/gat/gcn, got: {encoder_type}")
         self.horizon = horizon
         self.gcn_hidden_dim = gcn_hidden_dim
         self.transformer_d_model = transformer_d_model
@@ -38,6 +44,7 @@ class AnalyzeConfig:
         self.history_length = history_length
         self.weights_path = weights_path
         self.use_causal_mask = use_causal_mask
+        self.encoder_type = encoder_type
 
 
 class Analyzer:
@@ -45,7 +52,7 @@ class Analyzer:
     Analyze模块主入口：
     - 加载拓扑（邻接矩阵+节点列表）
     - 使用Monitor获取节点特征：包含 Monitor 返回的全部数值字段
-    - 使用GAT进行图学习
+    - 使用指定图编码器(MTA/GAT/GCN)进行图学习
     - 使用Informer进行未来H步预测（节点CPU利用率/Pod数、边延迟）
     """
     def __init__(self, config: Optional[AnalyzeConfig] = None):
@@ -53,9 +60,10 @@ class Analyzer:
         self.device = torch.device(self.cfg.device)
 
         # 将在 analyze_topology 内按输入维度初始化模型
+        self.encoder = None
         self.gat = None
         self.informer = None
-        # 持久化的线性投影层（将 GAT 输出映射到 transformer d_model）
+        # 持久化的线性投影层（将图编码器输出映射到 transformer d_model）
         self.proj_to_dmodel = None
         # 将时间序列动态特征映射到 transformer d_model 的持久层
         self.time_proj = None
@@ -63,7 +71,7 @@ class Analyzer:
         self.history_buffer = []
         self.weights_loaded = False
 
-    def _build_node_features(self, monitor: Monitor, service_ids: List[str]) -> np.ndarray:
+    def _build_node_features(self, monitor: "Monitor", service_ids: List[str]) -> np.ndarray:
         """
         使用Monitor查询每个节点的全部数值特征，固定顺序为：
         [request_cpu, request_memory, limit_cpu, limit_memory,
@@ -89,8 +97,14 @@ class Analyzer:
         return np.array(feats, dtype=np.float32)
 
     def _ensure_models(self, in_dim: int):
-        if self.gat is None:
-            self.gat = GATEncoder(in_dim=in_dim, hidden_dim=self.cfg.gcn_hidden_dim, dropout=self.cfg.dropout).to(self.device)
+        if self.encoder is None:
+            self.encoder = build_graph_encoder(
+                encoder_type=self.cfg.encoder_type,
+                in_dim=in_dim,
+                hidden_dim=self.cfg.gcn_hidden_dim,
+                dropout=self.cfg.dropout,
+            ).to(self.device)
+            self.gat = self.encoder
         if self.informer is None:
             self.informer = Informer(
                 d_model=self.cfg.transformer_d_model,
@@ -105,7 +119,7 @@ class Analyzer:
         # Ensure persistent projection exists and matches dimensions if possible
         # If gat is present and has attribute out_dim, create proj accordingly
         try:
-            gat_out_dim = getattr(self.gat, "out_dim", None)
+            gat_out_dim = getattr(self.encoder, "out_dim", None)
             if gat_out_dim is not None and self.proj_to_dmodel is None:
                 if gat_out_dim != self.cfg.transformer_d_model:
                     self.proj_to_dmodel = torch.nn.Linear(gat_out_dim, self.cfg.transformer_d_model).to(self.device)
@@ -123,7 +137,7 @@ class Analyzer:
     def analyze_topology(
         self,
         adjacency_json_path: str,
-        monitor: Monitor,
+        monitor: "Monitor",
         history_node_features: Optional[List[np.ndarray]] = None,
     ) -> AnalyzeResult:
         """
@@ -140,7 +154,7 @@ class Analyzer:
     def forward(
         self,
         adjacency_json_path: str,
-        monitor: Monitor,
+        monitor: "Monitor",
         history_node_features: Optional[List[np.ndarray]] = None,
         training: bool = True,
     ) -> AnalyzeResult:
@@ -175,12 +189,12 @@ class Analyzer:
         A = torch.from_numpy(adj_np).float().to(self.device)                    # (N,N)
         X_tensor = torch.from_numpy(X_cur).float().to(self.device)              # (N,F)
 
-        # GAT forward: conditionally compute with or without grad
+        # Graph encoder forward: conditionally compute with or without grad
         if training:
-            Z = self.gat(X_tensor, A)
+            Z = self.encoder(X_tensor, A)
         else:
             with torch.no_grad():
-                Z = self.gat(X_tensor, A)
+                Z = self.encoder(X_tensor, A)
 
         # Transformer输入：时间维度
         d_model = self.cfg.transformer_d_model
@@ -291,11 +305,12 @@ class Analyzer:
         )
         return AnalyzeResult(embedding=embedding, forecast=forecast)
 
-    def predict(self, adjacency_json_path: str, monitor: Monitor, history_node_features: Optional[List[np.ndarray]] = None) -> AnalyzeResult:
+    def predict(self, adjacency_json_path: str, monitor: "Monitor", history_node_features: Optional[List[np.ndarray]] = None) -> AnalyzeResult:
         """Inference wrapper: set eval mode and run forward under no_grad."""
         # set eval
         try:
-            self.gat.eval()
+            if self.encoder is not None:
+                self.encoder.eval()
             self.informer.eval()
             if self.proj_to_dmodel is not None:
                 self.proj_to_dmodel.eval()
@@ -314,13 +329,28 @@ class Analyzer:
             return
         try:
             checkpoint = torch.load(self.cfg.weights_path, map_location=self.device)
-            # support both old names (gcn/transformer) and new (gat/informer)
-            if "gat" in checkpoint:
-                if self.gat is not None:
-                    self.gat.load_state_dict(checkpoint["gat"])
+            ckpt_config = checkpoint.get("config", {})
+            ckpt_analyze_cfg = ckpt_config.get("analyze_config", {}) if isinstance(ckpt_config, dict) else {}
+            ckpt_encoder_type = checkpoint.get("encoder_type") or ckpt_analyze_cfg.get("encoder_type") or "mta"
+            ckpt_encoder_type = str(ckpt_encoder_type).lower()
+            if ckpt_encoder_type != self.cfg.encoder_type:
+                raise ValueError(
+                    "Analyzer checkpoint encoder_type mismatch: "
+                    f"checkpoint={ckpt_encoder_type}, requested={self.cfg.encoder_type}, "
+                    f"path={self.cfg.weights_path}"
+                )
+            # support both old names (gcn/transformer) and new (encoder/gat/informer)
+            encoder_state = checkpoint.get("encoder") or checkpoint.get("gat")
+            if encoder_state is None and ckpt_encoder_type == "mta":
+                encoder_state = checkpoint.get("gcn")
+            if encoder_state is not None and self.encoder is not None:
+                self.encoder.load_state_dict(encoder_state)
             if "informer" in checkpoint:
                 if self.informer is not None:
                     self.informer.load_state_dict(checkpoint["informer"])
+            elif "transformer" in checkpoint:
+                if self.informer is not None:
+                    self.informer.load_state_dict(checkpoint["transformer"])
             # load persistent projection if present in checkpoint
             if "proj_to_dmodel" in checkpoint and checkpoint["proj_to_dmodel"] is not None:
                 try:
@@ -344,4 +374,3 @@ class Analyzer:
         except Exception as exc:
             logger.warning("加载Analyzer权重失败: %s", exc)
             self.weights_loaded = True
-

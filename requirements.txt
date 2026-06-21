@@ -1,0 +1,12 @@
+gymnasium
+kubernetes
+matplotlib
+numpy
+pandas
+prometheus-api-client
+pydantic
+scikit-learn
+stable-baselines3
+sb3-contrib
+torch
+tqdm

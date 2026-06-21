@@ -1,5 +1,6 @@
 # 忽略整个configs文件夹（根目录下）
 configs/
+design_doc
 
 # 额外补充常用忽略（Python项目标配，可选）
 .DS_Store
@@ -10,3 +11,4 @@ __pycache__/
 .vscode/
 .idea/
 .env
+.venv/

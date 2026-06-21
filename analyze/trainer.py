@@ -13,7 +13,7 @@ from datetime import datetime
 
 from .analyzer import AnalyzeConfig
 from .loader import load_adjacency_with_nodes, adjacency_to_edge_index
-from .models import GATEncoder, Informer
+from .models import Informer, build_graph_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +85,12 @@ class TrainerConfig:
     transformer_ffn_dim: Optional[int] = None
     dropout: Optional[float] = None
     use_causal_mask: Optional[bool] = None
+    max_samples: Optional[int] = None
 
 
 class AnalyzerTrainer:
     """
-    使用历史指标数据对Analyzer中的GAT+Transformer进行离线训练。
+    使用历史指标数据对Analyzer中的图编码器+Informer进行离线训练。
     """
 
     def __init__(self, analyze_config: AnalyzeConfig, trainer_config: TrainerConfig):
@@ -154,6 +155,8 @@ class AnalyzerTrainer:
             history_len=trainer_config.history_len,
             horizon=self.analyze_cfg.horizon,
         )
+        if trainer_config.max_samples is not None:
+            self.dataset.indices = self.dataset.indices[: max(0, trainer_config.max_samples)]
         # split dataset into train/test by sample indices (time-based split)
         dataset_len = len(self.dataset)
         split_frac = getattr(trainer_config, "test_split", 0.2)
@@ -178,11 +181,13 @@ class AnalyzerTrainer:
         )
 
         input_dim = self.features.shape[-1]
-        self.gat = GATEncoder(
+        self.encoder = build_graph_encoder(
+            encoder_type=self.analyze_cfg.encoder_type,
             in_dim=input_dim,
             hidden_dim=self.analyze_cfg.gcn_hidden_dim,
             dropout=self.analyze_cfg.dropout,
         ).to(self.device)
+        self.gat = self.encoder
         self.informer = Informer(
             d_model=self.analyze_cfg.transformer_d_model,
             nhead=self.analyze_cfg.transformer_heads,
@@ -193,9 +198,9 @@ class AnalyzerTrainer:
             use_causal_mask=self.analyze_cfg.use_causal_mask,
         ).to(self.device)
 
-        # 我们使用Adam优化器同时优化GAT和Informer的参数
+        # 我们使用Adam优化器同时优化图编码器和Informer的参数
         self.optimizer = torch.optim.Adam(
-            list(self.gat.parameters()) + list(self.informer.parameters()),
+            list(self.encoder.parameters()) + list(self.informer.parameters()),
             lr=trainer_config.learning_rate,
         )
         # 计算真实值和预测值之间的均方误差
@@ -272,13 +277,14 @@ class AnalyzerTrainer:
 
     def train(self):
         logger.info(
-            "开始训练Analyzer模型 (epochs=%d, batch_size=%d, history_len=%d, horizon=%d)",
+            "开始训练Analyzer模型 (encoder=%s, epochs=%d, batch_size=%d, history_len=%d, horizon=%d)",
+            self.analyze_cfg.encoder_type,
             self.trainer_cfg.epochs,
             self.trainer_cfg.batch_size,
             self.trainer_cfg.history_len,
             self.analyze_cfg.horizon,
         )
-        self.gat.train()
+        self.encoder.train()
         self.informer.train()
         # 将 numpy 格式的图邻接矩阵转换成 torch tensor，放到 GPU/CPU 上
         adjacency = torch.from_numpy(self.adj_matrix).float().to(self.device)
@@ -303,7 +309,7 @@ class AnalyzerTrainer:
 
                     z_seq = []
                     for t in range(hist_b.size(0)):
-                        z_t = self.gat(hist_b[t], adjacency)
+                        z_t = self.encoder(hist_b[t], adjacency)
                         z_seq.append(z_t.unsqueeze(0))
                     seq_embeddings = torch.cat(z_seq, dim=0)  # (history, N, d_model)
                     current_embedding = seq_embeddings[-1]
@@ -339,6 +345,7 @@ class AnalyzerTrainer:
             logger.exception("保存平均损失CSV失败")
 
         self._save_model(timestamp_suffix=True)
+        self._save_model(timestamp_suffix=False)
 
         # After training, run evaluation on test split if available
         try:
@@ -359,10 +366,12 @@ class AnalyzerTrainer:
         torch.save(
             {
                 # new names
-                "gat": self.gat.state_dict(),
+                "encoder_type": self.analyze_cfg.encoder_type,
+                "encoder": self.encoder.state_dict(),
+                "gat": self.encoder.state_dict(),
                 "informer": self.informer.state_dict(),
                 # legacy names for compatibility
-                "gcn": self.gat.state_dict(),
+                "gcn": self.encoder.state_dict(),
                 "transformer": self.informer.state_dict(),
                 "config": {
                     "analyze_config": self.analyze_cfg.__dict__,
@@ -376,7 +385,7 @@ class AnalyzerTrainer:
 
     def evaluate(self) -> Dict[str, float]:
         """Evaluate model on the test dataset and return metrics (MSE for cpu and pod)."""
-        self.gat.eval()
+        self.encoder.eval()
         self.informer.eval()
         adjacency = torch.from_numpy(self.adj_matrix).float().to(self.device)
         total_cpu_loss = 0.0
@@ -396,7 +405,7 @@ class AnalyzerTrainer:
 
                     z_seq = []
                     for t in range(hist_b.size(0)):
-                        z_t = self.gat(hist_b[t], adjacency)
+                        z_t = self.encoder(hist_b[t], adjacency)
                         z_seq.append(z_t.unsqueeze(0))
                     seq_embeddings = torch.cat(z_seq, dim=0)
                     current_embedding = seq_embeddings[-1]
@@ -414,4 +423,3 @@ class AnalyzerTrainer:
         avg_cpu_mse = total_cpu_loss / max(1, total_samples)
         avg_pod_mse = total_pod_loss / max(1, total_samples)
         return {"cpu_mse": avg_cpu_mse, "pod_mse": avg_pod_mse, "samples": total_samples}
-

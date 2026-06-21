@@ -4,13 +4,13 @@ import os
 
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import DQN, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from sb3_contrib import RecurrentPPO
 
 from .env import KuTARAEnv, PlanningConfig
-from monitor.monitor import Monitor
-from analysis.analyzer import Analyzer
+from monitor import Monitor
+from analyze import Analyzer
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,8 @@ class Planner:
     def build_model(self, env: gym.Env, tensorboard_log: Optional[str] = None, 
                    policy_kwargs: Optional[dict] = None,
                    learning_rate: Optional[float] = None,
-                   ent_coef: str = 'auto'):
+                   ent_coef: str = 'auto',
+                   ppo_n_steps: int = 2048):
         """构建 RL 模型
         
         Args:
@@ -73,6 +74,7 @@ class Planner:
             self.model = RecurrentPPO(
                 "MlpLstmPolicy", env, 
                 learning_rate=lr,
+                n_steps=ppo_n_steps,
                 verbose=1, 
                 seed=self.seed, 
                 tensorboard_log=tensorboard_log, 
@@ -82,10 +84,30 @@ class Planner:
             self.model = PPO(
                 "MlpPolicy", env,
                 learning_rate=lr,
+                n_steps=ppo_n_steps,
                 verbose=1, 
                 seed=self.seed, 
                 tensorboard_log=tensorboard_log, 
                 policy_kwargs=policy_kwargs
+            )
+        elif self.algo == "dqn":
+            self.model = DQN(
+                "MlpPolicy",
+                env,
+                learning_rate=lr,
+                buffer_size=self.buffer_size,
+                learning_starts=1000,
+                batch_size=self.batch_size,
+                gamma=0.99,
+                train_freq=1,
+                gradient_steps=1,
+                target_update_interval=250,
+                exploration_fraction=0.1,
+                exploration_final_eps=0.05,
+                verbose=1,
+                seed=self.seed,
+                tensorboard_log=tensorboard_log,
+                policy_kwargs=policy_kwargs,
             )
         else:
             raise ValueError(f"不支持的算法: {self.algo}")
@@ -181,9 +203,10 @@ class Planner:
             self.model = RecurrentPPO.load(path, env=env)
         elif self.algo == "ppo":
             self.model = PPO.load(path, env=env)
+        elif self.algo == "dqn":
+            self.model = DQN.load(path, env=env)
         else:
             raise ValueError(f"不支持的算法: {self.algo}")
         
         logger.info(f"Loaded {self.algo.upper()} model from {path}")
         return self.model
-

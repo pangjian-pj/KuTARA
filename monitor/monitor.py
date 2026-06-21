@@ -52,7 +52,10 @@ class MonitorConfig:
             # 回退到 source reporter
             'reporter="source", destination_workload="{service_id}", destination_workload_namespace="{namespace}"',
             # 最后只按 destination_workload 过滤
-            'destination_workload="{service_id}", destination_workload_namespace="{namespace}"'
+            'destination_workload="{service_id}", destination_workload_namespace="{namespace}"',
+            # 入口/网关服务有时主要表现为 source_workload
+            'reporter="source", source_workload="{service_id}", source_workload_namespace="{namespace}"',
+            'source_workload="{service_id}", source_workload_namespace="{namespace}"'
         ]
         self.prom_latency_window = prom_latency_window
         self.prom_app_label_key = prom_app_label_key
@@ -286,4 +289,3 @@ class Monitor:
         else:
             logger.debug("未查询到延迟指标(service=%s, namespace=%s)", service_id, namespace)
         return 0.0
-
