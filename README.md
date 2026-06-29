@@ -1,6 +1,6 @@
 # KuTARA
 
-English | [简体中文](#kutara-中文)
+English | [简体中文](README-cn.md)
 
 KuTARA is the open-source core implementation of the paper on **"KuTARA: Topology-Aware Attention-Enhanced Reinforcement Learning for Coordinated Microservice Autoscaling in Kubernetes"**.
 
