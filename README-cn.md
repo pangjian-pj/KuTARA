@@ -10,7 +10,7 @@ KuTARA 是配套论文 **《KuTARA: Topology-Aware Attention-Enhanced Reinforcem
 - 利用图结构和注意力模型学习微服务拓扑表征。
 - 构建兼容 Gymnasium 的微服务自动扩缩容强化学习环境。
 - 基于 Stable-Baselines3 训练或加载 RL 策略。
-- 将策略动作安全地转换为 Kubernetes Deployment 扩缩容操作。
+- 将策略动作转换为安全的Kubernetes Deployment 扩缩容操作。
 
 ## 研究动机
 
@@ -18,11 +18,11 @@ KuTARA 是配套论文 **《KuTARA: Topology-Aware Attention-Enhanced Reinforcem
 
 KuTARA 通过以下方式解决这一问题：
 
-- **拓扑感知分析**：提取依赖感知的服务嵌入和工作负载预测信号。
-- **预测增强 RL 状态**：将未来信息注入策略观测空间，而不是直接把预测值映射为扩缩容动作。
-- **安全 Kubernetes 执行**：通过副本上下限和动作速率限制约束扩缩容行为。
+- **拓扑感知分析**：提取依赖感知的特征向量和工作负载预测值。
+- **预测增强 RL 状态**：将未来信息注入RL状态空间，而不是直接把预测值映射为扩缩容动作。
+- **Kubernetes 执行**：通过副本上下限和动作速率限制扩缩容行为。
 
-KuTARA 的目标是在不依赖激进资源过度配置的情况下，同时提升 SLA 满足率、资源效率和扩缩容稳定性。
+KuTARA 的目标是在不依赖资源过度配置的情况下，同时提升 SLA 满足率、资源效率和扩缩容稳定性。
 
 ## 功能特性
 
@@ -85,8 +85,7 @@ pip install -r requirements.txt
 
 ## 快速开始
 
-`main.py` 会串联监控、拓扑分析、RL 规划和 Kubernetes 执行模块。默认是
-dry-run，只计算扩缩容动作而不修改 Deployment：
+`main.py` 会串联监控、拓扑分析、RL 规划和 Kubernetes 执行模块。
 
 ```bash
 python main.py \
@@ -177,7 +176,6 @@ KuTARA 需要一个描述服务节点和有向依赖边的拓扑文件。
 - 默认情况下，服务 ID 应与 Kubernetes Deployment 名称一致。
 - Prometheus 查询语句可能需要根据你的 service mesh 或监控系统进行适配。
 - 执行器已经包含基本副本边界约束，但生产部署仍应增加更严格的策略保护、认证、发布检查和故障恢复机制。
-- 本开源版本主要面向论文复现和模块复用，而不是开箱即用的生产级 autoscaler。
 
 ## 引用
 

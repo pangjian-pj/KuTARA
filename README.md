@@ -85,9 +85,7 @@ If you need GPU acceleration, install the appropriate PyTorch build for your pla
 
 ## Quickstart
 
-`main.py` connects monitoring, topology analysis, RL planning, and Kubernetes
-execution. It defaults to dry-run mode, so it computes actions without changing
-Deployments:
+`main.py` connects monitoring, topology analysis, RL planning, and Kubernetes execution. 
 
 ```bash
 python main.py \
@@ -178,7 +176,6 @@ If your topology uses a different schema, adapt `analyze/loader.py`.
 - Service IDs are expected to match Kubernetes Deployment names by default.
 - Prometheus queries may need adaptation for different service meshes or metric exporters.
 - The executor is intentionally bounded, but production usage should add stronger policy guards, authentication, rollout checks, and failure recovery.
-- This release focuses on reproducible research and module reuse rather than a turnkey production autoscaler.
 
 ## Citation
 
